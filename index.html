@@ -3,10 +3,27 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="/src/style.css" />
+    <title>Geocoin Management</title>
   </head>
   <body>
     <div id="app">
-      <!-- todo -->
+      <header>
+        <h1>Geocoin Carrier</h1>
+      </header>
+      <main>
+        <section id="controlPanel">
+          <button id="north" title="north">⬆️</button>
+          <button id="south" title="south">⬇️</button>
+          <button id="west" title="west">⬅️</button>
+          <button id="east" title="east">➡️</button>
+          <button id="reset" title="reset">🔄</button>
+        </section>
+        <section id="statusPanel">
+          <span>Player Coins: <strong>0</strong></span>
+        </section>
+        <div id="map"></div>
+      </main>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
