@@ -21,16 +21,11 @@ class Cell {
   }
 }
 
-class CellFactory {
-  private static cells: Map<string, Cell> = new Map();
+const playerTile = new Cell(0, 0);
 
-  static getCell(i: number, j: number): Cell {
-    const key = `${i},${j}`;
-    if (!this.cells.has(key)) {
-      this.cells.set(key, new Cell(i, j));
-    }
-    return this.cells.get(key)!;
-  }
+interface Memento<T> {
+  toMemento(): T;
+  fromMemento(memento: T): void;
 }
 
 class Coin {
@@ -40,6 +35,43 @@ class Coin {
     public serial: number,
   ) {}
 }
+
+class Cache implements Memento<string> {
+  i: number;
+  j: number;
+  cacheCoinsArray: Coin[];
+  rect: leaflet.Rectangle;
+
+  constructor(
+    i: number,
+    j: number,
+    initialCoins: Coin[],
+    rect: leaflet.Rectangle,
+  ) {
+    this.i = i;
+    this.j = j;
+    this.cacheCoinsArray = initialCoins;
+    this.rect = rect;
+  }
+
+  toMemento(): string {
+    return JSON.stringify(this.cacheCoinsArray);
+  }
+
+  fromMemento(memento: string): void {
+    this.cacheCoinsArray = JSON.parse(memento);
+  }
+
+  setVisible(isVisible: boolean) {
+    if (isVisible) {
+      this.rect.addTo(map);
+    } else {
+      map.removeLayer(this.rect);
+    }
+  }
+}
+
+const cacheStorage: Map<string, Cache> = new Map();
 
 const map = leaflet.map("map", {
   center: OAKES_CLASSROOM,
@@ -67,6 +99,15 @@ let playerPosition = OAKES_CLASSROOM;
 const collectedCoins: Coin[] = [];
 
 function spawnCache(i: number, j: number) {
+  const cacheKey = `${i},${j}`;
+  console.log(cacheStorage);
+  console.log(cacheKey);
+  if (cacheStorage.has(cacheKey)) {
+    console.log("hasKey");
+    return;
+  }
+
+  console.log("doesnt have key");
   const globalI = Math.floor(
     (OAKES_CLASSROOM.lat - GLOBAL_ORIGIN.lat) / TILE_DEGREES + i,
   );
@@ -75,8 +116,6 @@ function spawnCache(i: number, j: number) {
   );
 
   const cacheCoins = Math.floor(luck([i, j, "initialValue"].toString()) * 10);
-
-  const _cell = CellFactory.getCell(globalI, globalJ);
 
   const cacheColor = "#ff4081";
   const cacheLocation = leaflet.latLng(
@@ -103,6 +142,9 @@ function spawnCache(i: number, j: number) {
     const coin = new Coin(globalI, globalJ, serial);
     cacheCoinsArray.push(coin);
   }
+
+  const cache = new Cache(globalI, globalJ, cacheCoinsArray, rect);
+  cacheStorage.set(`${i},${j}`, cache);
 
   rect.bindPopup(() => {
     if (playerPosition.distanceTo(cacheLocation) > INTERACTION_RADIUS) {
@@ -181,11 +223,43 @@ for (let i = -NEIGHBORHOOD_SIZE; i < NEIGHBORHOOD_SIZE; i++) {
   }
 }
 
+function regenerateCachesAroundPlayer() {
+  const { i, j } = playerTile;
+  for (let x = -NEIGHBORHOOD_SIZE; x <= NEIGHBORHOOD_SIZE; x++) {
+    for (let y = -NEIGHBORHOOD_SIZE; y <= NEIGHBORHOOD_SIZE; y++) {
+      const cacheKey = `${i + x},${j + y}`;
+      if (
+        !cacheStorage.has(cacheKey) &&
+        luck([i + x, j + y].toString()) < CACHE_SPAWN_PROBABILITY
+      ) {
+        spawnCache(i + x, j + y);
+      }
+    }
+  }
+}
+
+function cacheVisibility() {
+  const { i, j } = playerTile;
+  cacheStorage.forEach((cache, key) => {
+    const [cacheI, cacheJ] = key.split(",").map(Number);
+
+    const isInVisibleRange = Math.abs(i - cacheI) <= NEIGHBORHOOD_SIZE &&
+      Math.abs(j - cacheJ) <= NEIGHBORHOOD_SIZE;
+
+    if (isInVisibleRange) {
+      cache.setVisible(true);
+    } else {
+      cache.setVisible(false);
+    }
+  });
+}
+
 const controls = document.getElementById("controlPanel")!;
 controls.addEventListener("click", (event) => {
   const direction = (event.target as HTMLElement).id;
   if (["north", "south", "west", "east"].includes(direction)) {
     movePlayer(direction as "north" | "south" | "west" | "east");
+    regenerateCachesAroundPlayer();
   } else if (direction === "reset") {
     resetGame();
   }
@@ -193,10 +267,23 @@ controls.addEventListener("click", (event) => {
 
 function movePlayer(direction: "north" | "south" | "west" | "east") {
   let { lat, lng } = playerMarker.getLatLng();
-  if (direction === "north") lat += TILE_DEGREES;
-  if (direction === "south") lat -= TILE_DEGREES;
-  if (direction === "east") lng += TILE_DEGREES;
-  if (direction === "west") lng -= TILE_DEGREES;
+  if (direction === "north") {
+    lat += TILE_DEGREES;
+    playerTile.i += 1;
+  }
+  if (direction === "south") {
+    lat -= TILE_DEGREES;
+    playerTile.i -= 1;
+  }
+  if (direction === "east") {
+    lng += TILE_DEGREES;
+    playerTile.j += 1;
+  }
+  if (direction === "west") {
+    lng -= TILE_DEGREES;
+    playerTile.j -= 1;
+  }
+  cacheVisibility();
   playerMarker.setLatLng([lat, lng]);
   map.panTo([lat, lng]);
   playerPosition = leaflet.latLng(lat, lng);
