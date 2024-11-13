@@ -71,7 +71,8 @@ class Cache implements Memento<string> {
   }
 }
 
-const cacheStorage: Map<string, Cache> = new Map();
+const cacheStorage: Map<string, string> = new Map();
+const cacheMap: Map<string, Cache> = new Map();
 
 const map = leaflet.map("map", {
   center: OAKES_CLASSROOM,
@@ -100,14 +101,10 @@ const collectedCoins: Coin[] = [];
 
 function spawnCache(i: number, j: number) {
   const cacheKey = `${i},${j}`;
-  console.log(cacheStorage);
-  console.log(cacheKey);
   if (cacheStorage.has(cacheKey)) {
-    console.log("hasKey");
     return;
   }
 
-  console.log("doesnt have key");
   const globalI = Math.floor(
     (OAKES_CLASSROOM.lat - GLOBAL_ORIGIN.lat) / TILE_DEGREES + i,
   );
@@ -144,16 +141,21 @@ function spawnCache(i: number, j: number) {
   }
 
   const cache = new Cache(globalI, globalJ, cacheCoinsArray, rect);
-  cacheStorage.set(`${i},${j}`, cache);
+  cacheStorage.set(cacheKey, cache.toMemento());
+  cacheMap.set(`${i},${j}`, cache);
+  console.log(`Spawned cache at ${cacheKey}`, cache);
 
   rect.bindPopup(() => {
+    const loadedCache = restoreCache(cacheKey);
+    if (!loadedCache) return `<div>Cache not found.</div>`;
+
     if (playerPosition.distanceTo(cacheLocation) > INTERACTION_RADIUS) {
       return `<div>You need to be closer to interact with this cache.</div>`;
     }
 
     const popupDiv = document.createElement("div");
 
-    const coinList = cacheCoinsArray.map((coin) => {
+    const coinList = loadedCache.cacheCoinsArray.map((coin) => {
       return `<li>Coin: ${coin.i}:${coin.j}#${coin.serial}</li>`;
     }).join("");
 
@@ -164,21 +166,25 @@ function spawnCache(i: number, j: number) {
       <button id="collect" style="color: white;">Collect</button>
       <button id="deposit" style="color: white;">Deposit</button>
     `;
+
     popupDiv.querySelector<HTMLButtonElement>("#collect")!.addEventListener(
       "click",
       () => {
-        if (cacheCoinsArray.length > 0) {
-          const collectedCoin = cacheCoinsArray.shift();
+        if (loadedCache.cacheCoinsArray.length > 0) {
+          const collectedCoin = loadedCache.cacheCoinsArray.shift();
           if (collectedCoin) {
             collectedCoins.push(collectedCoin);
             playerCoins++;
             statusPanel.innerHTML = `Player coins: ${playerCoins}`;
 
-            popupDiv.querySelector("ul")!.innerHTML = cacheCoinsArray.map(
-              (coin) => {
-                return `<li>Coin: ${coin.i}:${coin.j}#${coin.serial}</li>`;
-              },
-            ).join("");
+            cacheStorage.set(cacheKey, loadedCache.toMemento());
+
+            popupDiv.querySelector("ul")!.innerHTML = loadedCache
+              .cacheCoinsArray.map(
+                (coin) => {
+                  return `<li>Coin: ${coin.i}:${coin.j}#${coin.serial}</li>`;
+                },
+              ).join("");
           }
         } else {
           alert("No more coins to collect at this cache.");
@@ -192,16 +198,21 @@ function spawnCache(i: number, j: number) {
         if (collectedCoins.length > 0) {
           const depoCoin = collectedCoins.pop();
           if (depoCoin) {
-            cacheCoinsArray.push(depoCoin);
+            loadedCache.cacheCoinsArray.push(depoCoin);
             playerCoins--;
             statusPanel.innerHTML = `Player coins: ${playerCoins}`;
-          }
 
-          popupDiv.querySelector("ul")!.innerHTML = cacheCoinsArray.map(
-            (coin) => {
-              return `<li>Coin: ${coin.i}:${coin.j}#${coin.serial}</li>`;
-            },
-          ).join("");
+            cacheStorage.set(cacheKey, loadedCache.toMemento());
+
+            popupDiv.querySelector("ul")!.innerHTML = loadedCache
+              .cacheCoinsArray.map(
+                (coin) => {
+                  return `<li>Coin: ${coin.i}:${coin.j}#${coin.serial}</li>`;
+                },
+              ).join("");
+          } else {
+            alert("No coins in your inventory to deposit.");
+          }
         } else {
           alert("No coins in your inventory to deposit.");
         }
@@ -209,6 +220,31 @@ function spawnCache(i: number, j: number) {
     );
 
     return popupDiv;
+  });
+}
+
+function restoreCache(cacheKey: string): Cache | null {
+  if (!cacheStorage.has(cacheKey)) return null;
+
+  const cacheMemento = cacheStorage.get(cacheKey)!;
+  const [i, j] = cacheKey.split(",").map(Number);
+  const rect = leaflet.rectangle([[0, 0], [0, 0]]);
+  const cache = new Cache(i, j, [], rect);
+  cache.fromMemento(cacheMemento);
+  return cache;
+}
+
+function cacheVisibility() {
+  const { i, j } = playerTile;
+  cacheMap.forEach((cache, key) => {
+    const [cacheI, cacheJ] = key.split(",").map(Number);
+    const isInVisibleRange = Math.abs(i - cacheI) <= NEIGHBORHOOD_SIZE &&
+      Math.abs(j - cacheJ) <= NEIGHBORHOOD_SIZE;
+    if (isInVisibleRange) {
+      cache.setVisible(true);
+    } else {
+      cache.setVisible(false);
+    }
   });
 }
 
@@ -236,22 +272,6 @@ function regenerateCachesAroundPlayer() {
       }
     }
   }
-}
-
-function cacheVisibility() {
-  const { i, j } = playerTile;
-  cacheStorage.forEach((cache, key) => {
-    const [cacheI, cacheJ] = key.split(",").map(Number);
-
-    const isInVisibleRange = Math.abs(i - cacheI) <= NEIGHBORHOOD_SIZE &&
-      Math.abs(j - cacheJ) <= NEIGHBORHOOD_SIZE;
-
-    if (isInVisibleRange) {
-      cache.setVisible(true);
-    } else {
-      cache.setVisible(false);
-    }
-  });
 }
 
 const controls = document.getElementById("controlPanel")!;
