@@ -3,6 +3,7 @@ import "leaflet/dist/leaflet.css";
 import "./style.css";
 import "./leafletWorkaround.ts";
 import luck from "./luck.ts";
+import { Board } from "./board.ts";
 
 const OAKES_CLASSROOM = leaflet.latLng(36.98949379578401, -122.06277128548504);
 const TILE_DEGREES = 0.0001;
@@ -10,8 +11,9 @@ const NEIGHBORHOOD_SIZE = 8;
 const CACHE_SPAWN_PROBABILITY = 0.05;
 const GAMEPLAY_ZOOM_LEVEL = 19;
 const GLOBAL_ORIGIN = leaflet.latLng(0, 0);
+const board = new Board(TILE_DEGREES, NEIGHBORHOOD_SIZE);
 
-class Cell {
+export class Cell {
   i: number;
   j: number;
 
@@ -21,7 +23,7 @@ class Cell {
   }
 }
 
-const playerTile = new Cell(0, 0);
+let playerTile = new Cell(0, 0);
 
 interface Memento<T> {
   toMemento(): T;
@@ -99,11 +101,62 @@ let playerCoins = 0;
 let playerPosition = OAKES_CLASSROOM;
 const collectedCoins: Coin[] = [];
 
+let geolocationWatchId: number | null = null;
+
+function toggleGeolocationTracking() {
+  const button = document.getElementById(
+    "toggleGeolocation",
+  ) as HTMLButtonElement;
+  if (geolocationWatchId !== null) {
+    navigator.geolocation.clearWatch(geolocationWatchId);
+    geolocationWatchId = null;
+    button.style.background = "#3a3a3a";
+    updatePlayerPosition(36.98949379578401, -122.06277128548504);
+    regenerateCachesAroundPlayer();
+  } else {
+    geolocationWatchId = navigator.geolocation.watchPosition(
+      (position) => {
+        const { latitude, longitude } = position.coords;
+        updatePlayerPosition(latitude, longitude);
+        regenerateCachesAroundPlayer();
+      },
+      (error) => {
+        console.error("Geolocation error:", error);
+        alert("Unable to access your location.");
+      },
+      {
+        enableHighAccuracy: true,
+      },
+    );
+    button.style.background = "white";
+  }
+}
+
+function updatePlayerPosition(lat: number, lng: number) {
+  // Set the player's new position on the map
+  playerMarker.setLatLng([lat, lng]);
+  map.panTo([lat, lng]);
+  playerPosition = leaflet.latLng(lat, lng);
+
+  const newPlayerTile = board.getCellForPoint(playerPosition);
+  playerTile = newPlayerTile;
+
+  // Update the visibility of caches based on the new player position
+  cacheVisibility();
+  saveGameData();
+}
+
+const toggleGeolocationButton = document.getElementById("toggleGeolocation")!;
+toggleGeolocationButton.addEventListener("click", toggleGeolocationTracking);
+
 function spawnCache(i: number, j: number) {
   const cacheKey = `${i},${j}`;
+  const cacheCell = new Cell(i, j);
+  const canonicalCell = board.getCanonicalCell(cacheCell);
   if (cacheStorage.has(cacheKey)) {
     return;
   }
+  const cacheLocation = board.getCellBounds(canonicalCell).getCenter();
 
   const globalI = Math.floor(
     (OAKES_CLASSROOM.lat - GLOBAL_ORIGIN.lat) / TILE_DEGREES + i,
@@ -114,33 +167,26 @@ function spawnCache(i: number, j: number) {
 
   const cacheCoins = Math.floor(luck([i, j, "initialValue"].toString()) * 10);
 
-  const cacheColor = "#ff4081";
-  const cacheLocation = leaflet.latLng(
-    GLOBAL_ORIGIN.lat + globalI * TILE_DEGREES,
-    GLOBAL_ORIGIN.lng + globalJ * TILE_DEGREES,
-  );
+  // const cacheColor = "#ff4081";
 
   const rect = leaflet.rectangle(
-    [
-      [cacheLocation.lat, cacheLocation.lng],
-      [cacheLocation.lat + TILE_DEGREES, cacheLocation.lng + TILE_DEGREES],
-    ],
-    {
-      color: cacheColor,
-      weight: 3,
-      fillColor: cacheColor,
-      fillOpacity: 0.4,
-    },
-  );
+    board.getCellBounds(canonicalCell),
+    { color: "#ff4081", weight: 3, fillColor: "#ff4081", fillOpacity: 0.4 },
+  ).addTo(map);
   rect.addTo(map);
 
   const cacheCoinsArray: Coin[] = [];
   for (let serial = 0; serial < cacheCoins; serial++) {
-    const coin = new Coin(globalI, globalJ, serial);
+    const coin = new Coin(canonicalCell.i, canonicalCell.j, serial);
     cacheCoinsArray.push(coin);
   }
 
-  const cache = new Cache(globalI, globalJ, cacheCoinsArray, rect);
+  const cache = new Cache(
+    canonicalCell.i,
+    canonicalCell.j,
+    cacheCoinsArray,
+    rect,
+  );
   cacheStorage.set(cacheKey, cache.toMemento());
   cacheMap.set(`${i},${j}`, cache);
   console.log(`Spawned cache at ${cacheKey}`, cache);
@@ -235,16 +281,12 @@ function restoreCache(cacheKey: string): Cache | null {
 }
 
 function cacheVisibility() {
-  const { i, j } = playerTile;
+  const nearbyCells = board.getCellsNearPoint(playerPosition);
   cacheMap.forEach((cache, key) => {
     const [cacheI, cacheJ] = key.split(",").map(Number);
-    const isInVisibleRange = Math.abs(i - cacheI) <= NEIGHBORHOOD_SIZE &&
-      Math.abs(j - cacheJ) <= NEIGHBORHOOD_SIZE;
-    if (isInVisibleRange) {
-      cache.setVisible(true);
-    } else {
-      cache.setVisible(false);
-    }
+    const cacheCell = new Cell(cacheI, cacheJ);
+    const isVisible = nearbyCells.includes(board.getCanonicalCell(cacheCell));
+    cache.setVisible(isVisible);
   });
 }
 
@@ -260,18 +302,16 @@ for (let i = -NEIGHBORHOOD_SIZE; i < NEIGHBORHOOD_SIZE; i++) {
 }
 
 function regenerateCachesAroundPlayer() {
-  const { i, j } = playerTile;
-  for (let x = -NEIGHBORHOOD_SIZE; x <= NEIGHBORHOOD_SIZE; x++) {
-    for (let y = -NEIGHBORHOOD_SIZE; y <= NEIGHBORHOOD_SIZE; y++) {
-      const cacheKey = `${i + x},${j + y}`;
-      if (
-        !cacheStorage.has(cacheKey) &&
-        luck([i + x, j + y].toString()) < CACHE_SPAWN_PROBABILITY
-      ) {
-        spawnCache(i + x, j + y);
-      }
+  const nearbyCells = board.getCellsNearPoint(playerPosition);
+  nearbyCells.forEach((cell) => {
+    const cacheKey = `${cell.i},${cell.j}`;
+    if (
+      !cacheStorage.has(cacheKey) &&
+      luck([cell.i, cell.j].toString()) < CACHE_SPAWN_PROBABILITY
+    ) {
+      spawnCache(cell.i, cell.j);
     }
-  }
+  });
 }
 
 const controls = document.getElementById("controlPanel")!;
@@ -307,6 +347,16 @@ function movePlayer(direction: "north" | "south" | "west" | "east") {
   playerMarker.setLatLng([lat, lng]);
   map.panTo([lat, lng]);
   playerPosition = leaflet.latLng(lat, lng);
+  saveGameData();
+}
+
+function saveGameData() {
+  /*
+  localStorage.setItem("playerPosition", JSON.stringify({ lat: playerPosition.lat, lng: playerPosition.lng }));
+  localStorage.setItem("playerTile", JSON.stringify({ i: playerTile.i, j: playerTile.j }));
+  localStorage.setItem("playerCoins", JSON.stringify(playerCoins));
+  localStorage.setItem("collectedCoins", JSON.stringify(collectedCoins));
+  */
 }
 
 function resetGame() {
@@ -314,4 +364,6 @@ function resetGame() {
   playerMarker.setLatLng(OAKES_CLASSROOM);
   map.setView(OAKES_CLASSROOM, GAMEPLAY_ZOOM_LEVEL);
   statusPanel.innerHTML = `Coins: ${playerCoins}`;
+  playerTile.i = 0;
+  playerTile.j = 0;
 }
