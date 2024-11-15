@@ -10,7 +10,6 @@ const TILE_DEGREES = 0.0001;
 const NEIGHBORHOOD_SIZE = 8;
 const CACHE_SPAWN_PROBABILITY = 0.05;
 const GAMEPLAY_ZOOM_LEVEL = 19;
-const GLOBAL_ORIGIN = leaflet.latLng(0, 0);
 const board = new Board(TILE_DEGREES, NEIGHBORHOOD_SIZE);
 
 export class Cell {
@@ -85,6 +84,12 @@ const map = leaflet.map("map", {
   scrollWheelZoom: false,
 });
 
+const playerPath: leaflet.LatLng[] = [];
+const playerPolyline = leaflet.polyline(playerPath, {
+  color: "blue",
+  weight: 5,
+}).addTo(map);
+
 leaflet.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
   maxZoom: 19,
   attribution:
@@ -133,7 +138,6 @@ function toggleGeolocationTracking() {
 }
 
 function updatePlayerPosition(lat: number, lng: number) {
-  // Set the player's new position on the map
   playerMarker.setLatLng([lat, lng]);
   map.panTo([lat, lng]);
   playerPosition = leaflet.latLng(lat, lng);
@@ -141,7 +145,9 @@ function updatePlayerPosition(lat: number, lng: number) {
   const newPlayerTile = board.getCellForPoint(playerPosition);
   playerTile = newPlayerTile;
 
-  // Update the visibility of caches based on the new player position
+  playerPath.push(playerPosition);
+  playerPolyline.setLatLngs(playerPath);
+
   cacheVisibility();
   saveGameData();
 }
@@ -157,13 +163,6 @@ function spawnCache(i: number, j: number) {
     return;
   }
   const cacheLocation = board.getCellBounds(canonicalCell).getCenter();
-
-  const globalI = Math.floor(
-    (OAKES_CLASSROOM.lat - GLOBAL_ORIGIN.lat) / TILE_DEGREES + i,
-  );
-  const globalJ = Math.floor(
-    (OAKES_CLASSROOM.lng - GLOBAL_ORIGIN.lng) / TILE_DEGREES + j,
-  );
 
   const cacheCoins = Math.floor(luck([i, j, "initialValue"].toString()) * 10);
 
@@ -189,9 +188,15 @@ function spawnCache(i: number, j: number) {
   );
   cacheStorage.set(cacheKey, cache.toMemento());
   cacheMap.set(`${i},${j}`, cache);
-  console.log(`Spawned cache at ${cacheKey}`, cache);
+  setupCachePopup(cache, cacheKey, cacheLocation);
+}
 
-  rect.bindPopup(() => {
+function setupCachePopup(
+  cache: Cache,
+  cacheKey: string,
+  cacheLocation: leaflet.LatLng,
+) {
+  cache.rect.bindPopup(() => {
     const loadedCache = restoreCache(cacheKey);
     if (!loadedCache) return `<div>Cache not found.</div>`;
 
@@ -206,7 +211,7 @@ function spawnCache(i: number, j: number) {
     }).join("");
 
     popupDiv.innerHTML = `
-      <div>Cache location: "${globalI},${globalJ}"</div>
+      <div>Cache location: ${cache.i},${cache.j}</div>
       <div>Coins in cache:</div>
       <ul>${coinList}</ul>
       <button id="collect" style="color: white;">Collect</button>
@@ -222,15 +227,14 @@ function spawnCache(i: number, j: number) {
             collectedCoins.push(collectedCoin);
             playerCoins++;
             statusPanel.innerHTML = `Player coins: ${playerCoins}`;
-
             cacheStorage.set(cacheKey, loadedCache.toMemento());
 
+            // Update coin list in popup
             popupDiv.querySelector("ul")!.innerHTML = loadedCache
               .cacheCoinsArray.map(
-                (coin) => {
-                  return `<li>Coin: ${coin.i}:${coin.j}#${coin.serial}</li>`;
-                },
+                (coin) => `<li>Coin: ${coin.i}:${coin.j}#${coin.serial}</li>`,
               ).join("");
+            saveGameData();
           }
         } else {
           alert("No more coins to collect at this cache.");
@@ -247,15 +251,13 @@ function spawnCache(i: number, j: number) {
             loadedCache.cacheCoinsArray.push(depoCoin);
             playerCoins--;
             statusPanel.innerHTML = `Player coins: ${playerCoins}`;
-
             cacheStorage.set(cacheKey, loadedCache.toMemento());
 
             popupDiv.querySelector("ul")!.innerHTML = loadedCache
               .cacheCoinsArray.map(
-                (coin) => {
-                  return `<li>Coin: ${coin.i}:${coin.j}#${coin.serial}</li>`;
-                },
+                (coin) => `<li>Coin: ${coin.i}:${coin.j}#${coin.serial}</li>`,
               ).join("");
+            saveGameData();
           } else {
             alert("No coins in your inventory to deposit.");
           }
@@ -319,10 +321,11 @@ controls.addEventListener("click", (event) => {
   const direction = (event.target as HTMLElement).id;
   if (["north", "south", "west", "east"].includes(direction)) {
     movePlayer(direction as "north" | "south" | "west" | "east");
-    regenerateCachesAroundPlayer();
   } else if (direction === "reset") {
     resetGame();
   }
+  regenerateCachesAroundPlayer();
+  saveGameData();
 });
 
 function movePlayer(direction: "north" | "south" | "west" | "east") {
@@ -347,23 +350,131 @@ function movePlayer(direction: "north" | "south" | "west" | "east") {
   playerMarker.setLatLng([lat, lng]);
   map.panTo([lat, lng]);
   playerPosition = leaflet.latLng(lat, lng);
+  playerPath.push(playerPosition);
+  playerPolyline.setLatLngs(playerPath);
   saveGameData();
 }
 
 function saveGameData() {
-  /*
-  localStorage.setItem("playerPosition", JSON.stringify({ lat: playerPosition.lat, lng: playerPosition.lng }));
-  localStorage.setItem("playerTile", JSON.stringify({ i: playerTile.i, j: playerTile.j }));
+  localStorage.setItem(
+    "playerPosition",
+    JSON.stringify({
+      lat: playerPosition.lat,
+      lng: playerPosition.lng,
+    }),
+  );
+
+  localStorage.setItem(
+    "playerTile",
+    JSON.stringify({
+      i: playerTile.i,
+      j: playerTile.j,
+    }),
+  );
+
   localStorage.setItem("playerCoins", JSON.stringify(playerCoins));
+
   localStorage.setItem("collectedCoins", JSON.stringify(collectedCoins));
-  */
+
+  localStorage.setItem(
+    "playerPath",
+    JSON.stringify(playerPath.map((point) => ({
+      lat: point.lat,
+      lng: point.lng,
+    }))),
+  );
+
+  const cacheData = Object.fromEntries(cacheStorage);
+  localStorage.setItem("cacheData", JSON.stringify(cacheData));
+}
+
+function loadGameData() {
+  const savedPosition = localStorage.getItem("playerPosition");
+  if (savedPosition) {
+    const { lat, lng } = JSON.parse(savedPosition);
+    playerPosition = leaflet.latLng(lat, lng);
+    playerMarker.setLatLng(playerPosition);
+    map.panTo(playerPosition);
+  }
+
+  const savedTile = localStorage.getItem("playerTile");
+  if (savedTile) {
+    const { i, j } = JSON.parse(savedTile);
+    playerTile = new Cell(i, j);
+  }
+
+  const savedCoins = localStorage.getItem("playerCoins");
+  if (savedCoins) {
+    playerCoins = JSON.parse(savedCoins);
+    statusPanel.innerHTML = `Player coins: ${playerCoins}`;
+  }
+
+  const savedCollectedCoins = localStorage.getItem("collectedCoins");
+  if (savedCollectedCoins) {
+    collectedCoins.length = 0;
+    collectedCoins.push(...JSON.parse(savedCollectedCoins));
+  }
+
+  const savedPlayerPath = localStorage.getItem("playerPath");
+  if (savedPlayerPath) {
+    const parsedPath = JSON.parse(savedPlayerPath);
+    const latLngPath = parsedPath.map((point: { lat: number; lng: number }) =>
+      leaflet.latLng(point.lat, point.lng)
+    );
+    playerPath.push(...latLngPath);
+    playerPolyline.setLatLngs(playerPath);
+  }
+
+  const savedCacheData = localStorage.getItem("cacheData");
+  if (savedCacheData) {
+    const caches = JSON.parse(savedCacheData);
+    Object.entries(caches).forEach(([key, coins]) => {
+      const [i, j] = key.split(",").map(Number);
+      const cacheLocation = board.getCellBounds(new Cell(i, j)).getCenter();
+      const rect = leaflet.rectangle(board.getCellBounds(new Cell(i, j)), {
+        color: "#ff4081",
+        weight: 3,
+        fillColor: "#ff4081",
+        fillOpacity: 0.4,
+      }).addTo(map);
+
+      const cache = new Cache(i, j, [], rect);
+      cache.fromMemento(coins as string);
+      cacheMap.set(key, cache);
+      cacheStorage.set(key, coins as string);
+
+      setupCachePopup(cache, key, cacheLocation);
+    });
+  }
 }
 
 function resetGame() {
+  cacheMap.forEach((cache) => {
+    cache.setVisible(false);
+  });
   playerCoins = 0;
   playerMarker.setLatLng(OAKES_CLASSROOM);
+  playerPosition = leaflet.latLng(36.98949379578401, -122.06277128548504);
   map.setView(OAKES_CLASSROOM, GAMEPLAY_ZOOM_LEVEL);
   statusPanel.innerHTML = `Coins: ${playerCoins}`;
+
+  if (geolocationWatchId !== null) {
+    toggleGeolocationTracking();
+  }
+  playerPath.length = 0;
+  playerPolyline.setLatLngs([]);
+
   playerTile.i = 0;
   playerTile.j = 0;
+  collectedCoins.length = 0;
+
+  cacheMap.clear();
+  cacheStorage.clear();
+  localStorage.clear();
+  regenerateCachesAroundPlayer();
 }
+
+document.addEventListener("DOMContentLoaded", () => {
+  loadGameData();
+  regenerateCachesAroundPlayer();
+});
