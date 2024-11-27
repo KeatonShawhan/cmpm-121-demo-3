@@ -30,29 +30,91 @@ interface Memento<T> {
 }
 
 class Coin {
-  constructor(
-    public i: number,
-    public j: number,
-    public serial: number,
-  ) {}
+  constructor(public i: number, public j: number, public serial: number) {}
+}
+
+// NEW: MapService class to encapsulate map interactions
+class MapService {
+  private map: leaflet.Map;
+
+  constructor(map: leaflet.Map) {
+    this.map = map;
+  }
+
+  addLayer(layer: leaflet.Layer): void {
+    this.map.addLayer(layer);
+  }
+
+  removeLayer(layer: leaflet.Layer): void {
+    this.map.removeLayer(layer);
+  }
+
+  panTo(position: leaflet.LatLng): void {
+    this.map.panTo(position);
+  }
+
+  getVisibleBounds(): leaflet.LatLngBounds {
+    return this.map.getBounds();
+  }
+
+  setView(center: leaflet.LatLng, zoom: number): void {
+    this.map.setView(center, zoom);
+  }
+
+  // Additional methods can be added as needed
+}
+
+// Updated CacheView class to use MapService
+class CacheView {
+  private rect: leaflet.Rectangle;
+  private mapService: MapService;
+
+  constructor(rect: leaflet.Rectangle, mapService: MapService) {
+    this.rect = rect;
+    this.mapService = mapService;
+  }
+
+  setVisible(isVisible: boolean) {
+    if (isVisible) {
+      this.mapService.addLayer(this.rect); // Use MapService
+    } else {
+      this.mapService.removeLayer(this.rect); // Use MapService
+    }
+  }
+
+  bindPopup(
+    popupContent:
+      | string
+      | HTMLElement
+      | ((layer: leaflet.Layer) => string | HTMLElement),
+  ) {
+    this.rect.bindPopup(popupContent);
+  }
+
+  getBounds(): leaflet.LatLngBounds {
+    return this.rect.getBounds();
+  }
+
+  removeFromMap() {
+    this.mapService.removeLayer(this.rect); // Use MapService
+  }
+
+  getRect(): leaflet.Rectangle {
+    return this.rect;
+  }
 }
 
 class Cache implements Memento<string> {
   i: number;
   j: number;
   cacheCoinsArray: Coin[];
-  rect: leaflet.Rectangle;
+  private view: CacheView;
 
-  constructor(
-    i: number,
-    j: number,
-    initialCoins: Coin[],
-    rect: leaflet.Rectangle,
-  ) {
+  constructor(i: number, j: number, initialCoins: Coin[], view: CacheView) {
     this.i = i;
     this.j = j;
     this.cacheCoinsArray = initialCoins;
-    this.rect = rect;
+    this.view = view;
   }
 
   toMemento(): string {
@@ -63,19 +125,16 @@ class Cache implements Memento<string> {
     this.cacheCoinsArray = JSON.parse(memento);
   }
 
-  setVisible(isVisible: boolean) {
-    if (isVisible) {
-      this.rect.addTo(map);
-    } else {
-      map.removeLayer(this.rect);
-    }
+  getView(): CacheView {
+    return this.view;
   }
 }
 
 const cacheStorage: Map<string, string> = new Map();
 const cacheMap: Map<string, Cache> = new Map();
 
-const map = leaflet.map("map", {
+// Initialize the map instance
+const mapInstance = leaflet.map("map", {
   center: OAKES_CLASSROOM,
   zoom: GAMEPLAY_ZOOM_LEVEL,
   minZoom: GAMEPLAY_ZOOM_LEVEL,
@@ -84,22 +143,31 @@ const map = leaflet.map("map", {
   scrollWheelZoom: false,
 });
 
+// Add tile layer to the map instance
+leaflet
+  .tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+    attribution:
+      '&copy; <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+  })
+  .addTo(mapInstance);
+
+// Create the MapService
+const mapService = new MapService(mapInstance);
+
 const playerPath: leaflet.LatLng[] = [];
-const playerPolyline = leaflet.polyline(playerPath, {
-  color: "blue",
-  weight: 5,
-}).addTo(map);
+const playerPolyline = leaflet
+  .polyline(playerPath, {
+    color: "blue",
+    weight: 5,
+  })
+  .addTo(mapInstance);
 
-leaflet.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-  maxZoom: 19,
-  attribution:
-    '&copy; <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-}).addTo(map);
+const playerMarker = leaflet
+  .marker(OAKES_CLASSROOM)
+  .bindTooltip("You are here!")
+  .addTo(mapInstance);
 
-const playerMarker = leaflet.marker(OAKES_CLASSROOM).bindTooltip(
-  "You are here!",
-);
-playerMarker.addTo(map);
 const INTERACTION_RADIUS = 10;
 
 let playerCoins = 0;
@@ -139,7 +207,7 @@ function toggleGeolocationTracking() {
 
 function updatePlayerPosition(lat: number, lng: number) {
   playerMarker.setLatLng([lat, lng]);
-  map.panTo([lat, lng]);
+  mapService.panTo(leaflet.latLng(lat, lng)); // Use MapService
   playerPosition = leaflet.latLng(lat, lng);
 
   const newPlayerTile = board.getCellForPoint(playerPosition);
@@ -150,6 +218,7 @@ function updatePlayerPosition(lat: number, lng: number) {
 
   cacheVisibility();
   saveGameData();
+  regenerateCachesAroundPlayer();
 }
 
 const toggleGeolocationButton = document.getElementById("toggleGeolocation")!;
@@ -164,16 +233,18 @@ function spawnCache(i: number, j: number) {
   }
   const cacheLocation = board.getCellBounds(canonicalCell).getCenter();
 
-  const cacheCoins = Math.floor(luck([i, j, "initialValue"].toString()) * 10);
+  const cacheCoins = Math.floor(
+    luck([i, j, "initialValue"].toString()) * 10,
+  );
 
-  // const cacheColor = "#ff4081";
+  const rect = leaflet.rectangle(board.getCellBounds(canonicalCell), {
+    color: "#ff4081",
+    weight: 3,
+    fillColor: "#ff4081",
+    fillOpacity: 0.4,
+  });
 
-  const rect = leaflet.rectangle(
-    board.getCellBounds(canonicalCell),
-    { color: "#ff4081", weight: 3, fillColor: "#ff4081", fillOpacity: 0.4 },
-  ).addTo(map);
-  rect.addTo(map);
-
+  const cacheView = new CacheView(rect, mapService); // Pass mapService
   const cacheCoinsArray: Coin[] = [];
   for (let serial = 0; serial < cacheCoins; serial++) {
     const coin = new Coin(canonicalCell.i, canonicalCell.j, serial);
@@ -184,10 +255,11 @@ function spawnCache(i: number, j: number) {
     canonicalCell.i,
     canonicalCell.j,
     cacheCoinsArray,
-    rect,
+    cacheView,
   );
   cacheStorage.set(cacheKey, cache.toMemento());
   cacheMap.set(`${i},${j}`, cache);
+
   setupCachePopup(cache, cacheKey, cacheLocation);
 }
 
@@ -196,7 +268,7 @@ function setupCachePopup(
   cacheKey: string,
   cacheLocation: leaflet.LatLng,
 ) {
-  cache.rect.bindPopup(() => {
+  cache.getView().bindPopup(() => {
     const loadedCache = restoreCache(cacheKey);
     if (!loadedCache) return `<div>Cache not found.</div>`;
 
@@ -206,9 +278,11 @@ function setupCachePopup(
 
     const popupDiv = document.createElement("div");
 
-    const coinList = loadedCache.cacheCoinsArray.map((coin) => {
-      return `<li>Coin: ${coin.i}:${coin.j}#${coin.serial}</li>`;
-    }).join("");
+    const coinList = loadedCache.cacheCoinsArray
+      .map((coin) => {
+        return `<li>Coin: ${coin.i}:${coin.j}#${coin.serial}</li>`;
+      })
+      .join("");
 
     popupDiv.innerHTML = `
       <div>Cache location: ${cache.i},${cache.j}</div>
@@ -218,9 +292,9 @@ function setupCachePopup(
       <button id="deposit" style="color: white;">Deposit</button>
     `;
 
-    popupDiv.querySelector<HTMLButtonElement>("#collect")!.addEventListener(
-      "click",
-      () => {
+    popupDiv
+      .querySelector<HTMLButtonElement>("#collect")!
+      .addEventListener("click", () => {
         if (loadedCache.cacheCoinsArray.length > 0) {
           const collectedCoin = loadedCache.cacheCoinsArray.shift();
           if (collectedCoin) {
@@ -231,20 +305,21 @@ function setupCachePopup(
 
             // Update coin list in popup
             popupDiv.querySelector("ul")!.innerHTML = loadedCache
-              .cacheCoinsArray.map(
+              .cacheCoinsArray
+              .map(
                 (coin) => `<li>Coin: ${coin.i}:${coin.j}#${coin.serial}</li>`,
-              ).join("");
+              )
+              .join("");
             saveGameData();
           }
         } else {
           alert("No more coins to collect at this cache.");
         }
-      },
-    );
+      });
 
-    popupDiv.querySelector<HTMLButtonElement>("#deposit")!.addEventListener(
-      "click",
-      () => {
+    popupDiv
+      .querySelector<HTMLButtonElement>("#deposit")!
+      .addEventListener("click", () => {
         if (collectedCoins.length > 0) {
           const depoCoin = collectedCoins.pop();
           if (depoCoin) {
@@ -254,9 +329,11 @@ function setupCachePopup(
             cacheStorage.set(cacheKey, loadedCache.toMemento());
 
             popupDiv.querySelector("ul")!.innerHTML = loadedCache
-              .cacheCoinsArray.map(
+              .cacheCoinsArray
+              .map(
                 (coin) => `<li>Coin: ${coin.i}:${coin.j}#${coin.serial}</li>`,
-              ).join("");
+              )
+              .join("");
             saveGameData();
           } else {
             alert("No coins in your inventory to deposit.");
@@ -264,8 +341,7 @@ function setupCachePopup(
         } else {
           alert("No coins in your inventory to deposit.");
         }
-      },
-    );
+      });
 
     return popupDiv;
   });
@@ -276,8 +352,18 @@ function restoreCache(cacheKey: string): Cache | null {
 
   const cacheMemento = cacheStorage.get(cacheKey)!;
   const [i, j] = cacheKey.split(",").map(Number);
-  const rect = leaflet.rectangle([[0, 0], [0, 0]]);
-  const cache = new Cache(i, j, [], rect);
+
+  // Recreate the rect and CacheView
+  const cacheCell = new Cell(i, j);
+  const rect = leaflet.rectangle(board.getCellBounds(cacheCell), {
+    color: "#ff4081",
+    weight: 3,
+    fillColor: "#ff4081",
+    fillOpacity: 0.4,
+  });
+  const cacheView = new CacheView(rect, mapService);
+
+  const cache = new Cache(i, j, [], cacheView);
   cache.fromMemento(cacheMemento);
   return cache;
 }
@@ -287,8 +373,10 @@ function cacheVisibility() {
   cacheMap.forEach((cache, key) => {
     const [cacheI, cacheJ] = key.split(",").map(Number);
     const cacheCell = new Cell(cacheI, cacheJ);
-    const isVisible = nearbyCells.includes(board.getCanonicalCell(cacheCell));
-    cache.setVisible(isVisible);
+    const isVisible = nearbyCells.includes(
+      board.getCanonicalCell(cacheCell),
+    );
+    cache.getView().setVisible(isVisible);
   });
 }
 
@@ -348,7 +436,7 @@ function movePlayer(direction: "north" | "south" | "west" | "east") {
   }
   cacheVisibility();
   playerMarker.setLatLng([lat, lng]);
-  map.panTo([lat, lng]);
+  mapService.panTo(leaflet.latLng(lat, lng)); // Use MapService
   playerPosition = leaflet.latLng(lat, lng);
   playerPath.push(playerPosition);
   playerPolyline.setLatLngs(playerPath);
@@ -378,10 +466,12 @@ function saveGameData() {
 
   localStorage.setItem(
     "playerPath",
-    JSON.stringify(playerPath.map((point) => ({
-      lat: point.lat,
-      lng: point.lng,
-    }))),
+    JSON.stringify(
+      playerPath.map((point) => ({
+        lat: point.lat,
+        lng: point.lng,
+      })),
+    ),
   );
 
   const cacheData = Object.fromEntries(cacheStorage);
@@ -394,7 +484,7 @@ function loadGameData() {
     const { lat, lng } = JSON.parse(savedPosition);
     playerPosition = leaflet.latLng(lat, lng);
     playerMarker.setLatLng(playerPosition);
-    map.panTo(playerPosition);
+    mapService.panTo(playerPosition); // Use MapService
   }
 
   const savedTile = localStorage.getItem("playerTile");
@@ -430,32 +520,44 @@ function loadGameData() {
     const caches = JSON.parse(savedCacheData);
     Object.entries(caches).forEach(([key, coins]) => {
       const [i, j] = key.split(",").map(Number);
-      const cacheLocation = board.getCellBounds(new Cell(i, j)).getCenter();
-      const rect = leaflet.rectangle(board.getCellBounds(new Cell(i, j)), {
+
+      const cacheCell = new Cell(i, j);
+      const rect = leaflet.rectangle(board.getCellBounds(cacheCell), {
         color: "#ff4081",
         weight: 3,
         fillColor: "#ff4081",
         fillOpacity: 0.4,
-      }).addTo(map);
+      });
 
-      const cache = new Cache(i, j, [], rect);
+      const cacheView = new CacheView(rect, mapService);
+      const cache = new Cache(i, j, [], cacheView);
       cache.fromMemento(coins as string);
       cacheMap.set(key, cache);
       cacheStorage.set(key, coins as string);
 
-      setupCachePopup(cache, key, cacheLocation);
+      // Set visibility
+      const nearbyCells = board.getCellsNearPoint(playerPosition);
+      const isVisible = nearbyCells.includes(
+        board.getCanonicalCell(cacheCell),
+      );
+      cache.getView().setVisible(isVisible);
+
+      setupCachePopup(cache, key, board.getCellBounds(cacheCell).getCenter());
     });
   }
 }
 
 function resetGame() {
   cacheMap.forEach((cache) => {
-    cache.setVisible(false);
+    cache.getView().setVisible(false);
   });
   playerCoins = 0;
   playerMarker.setLatLng(OAKES_CLASSROOM);
-  playerPosition = leaflet.latLng(36.98949379578401, -122.06277128548504);
-  map.setView(OAKES_CLASSROOM, GAMEPLAY_ZOOM_LEVEL);
+  playerPosition = leaflet.latLng(
+    36.98949379578401,
+    -122.06277128548504,
+  );
+  mapService.setView(OAKES_CLASSROOM, GAMEPLAY_ZOOM_LEVEL); // Use MapService
   statusPanel.innerHTML = `Coins: ${playerCoins}`;
 
   if (geolocationWatchId !== null) {
@@ -468,10 +570,15 @@ function resetGame() {
   playerTile.j = 0;
   collectedCoins.length = 0;
 
+  cacheMap.forEach((cache) => {
+    cache.getView().removeFromMap();
+  });
+
   cacheMap.clear();
   cacheStorage.clear();
   localStorage.clear();
   regenerateCachesAroundPlayer();
+  cacheVisibility();
 }
 
 document.addEventListener("DOMContentLoaded", () => {
